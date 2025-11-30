@@ -7,6 +7,135 @@ import { Icons } from './components/Icon';
 import { ProjectFile, SidebarView, GitTreeItem, GitHubUser, GitHubRepo, DocSection } from './types';
 import { fetchRepoTree, fetchFileContent, detectLanguage, validateToken, getUserRepos } from './services/githubService';
 
+// --- Helper Types & Functions for Tree View ---
+
+interface TreeNode {
+  name: string;
+  path: string;
+  type: 'blob' | 'tree';
+  children?: TreeNode[];
+}
+
+const buildTree = (items: GitTreeItem[]): TreeNode[] => {
+  const root: TreeNode[] = [];
+  const map: { [key: string]: TreeNode } = {};
+
+  // Sort: shorter paths first to ensure parents exist before children (usually), 
+  // but we handle missing parents dynamically anyway.
+  // Actually, we process paths.
+  
+  items.forEach(item => {
+    const parts = item.path.split('/');
+    let currentLevel = root;
+    let currentPath = '';
+
+    parts.forEach((part, index) => {
+      currentPath = currentPath ? `${currentPath}/${part}` : part;
+      
+      // Check if node exists at this level
+      let existingNode = currentLevel.find(n => n.name === part);
+
+      if (!existingNode) {
+        const isFile = index === parts.length - 1;
+        const newNode: TreeNode = {
+          name: part,
+          path: currentPath,
+          type: isFile ? 'blob' : 'tree',
+          children: isFile ? undefined : []
+        };
+        currentLevel.push(newNode);
+        existingNode = newNode;
+      }
+
+      if (existingNode.children) {
+        currentLevel = existingNode.children;
+      }
+    });
+  });
+
+  // Recursive sort: Folders first, then Files. Alphabetical within groups.
+  const sortNodes = (nodes: TreeNode[]) => {
+    nodes.sort((a, b) => {
+      if (a.type === b.type) return a.name.localeCompare(b.name);
+      return a.type === 'tree' ? -1 : 1;
+    });
+    nodes.forEach(node => {
+      if (node.children) sortNodes(node.children);
+    });
+  };
+
+  sortNodes(root);
+  return root;
+};
+
+// --- Tree Node Component ---
+
+const FileTreeNode: React.FC<{
+  node: TreeNode;
+  depth: number;
+  activeFileId: string | undefined;
+  files: ProjectFile[];
+  onFileClick: (path: string) => void;
+  getFileIcon: (name: string) => React.ReactNode;
+}> = ({ node, depth, activeFileId, files, onFileClick, getFileIcon }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const isFile = node.type === 'blob';
+  
+  // Check if this file is the active one to highlight it
+  const isActive = isFile && files.some(f => f.path === node.path && f.id === activeFileId);
+  // Check if active file is a file loaded in memory (files array) to highlight "opened" status even if not focused
+  const isOpenedInMemory = isFile && files.some(f => f.path === node.path);
+
+  const handleClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (isFile) {
+      onFileClick(node.path);
+    } else {
+      setIsOpen(!isOpen);
+    }
+  };
+
+  return (
+    <div className="select-none">
+      <div 
+        onClick={handleClick}
+        className={`flex items-center gap-1 py-1 cursor-pointer transition-colors text-xs
+          ${isActive ? 'bg-[#37373d] text-white' : 'text-gray-400 hover:bg-[#2a2d2e] hover:text-gray-200'}
+        `}
+        style={{ paddingLeft: `${depth * 12 + 10}px` }}
+      >
+        {!isFile && (
+           <span className="text-gray-500 mr-0.5">
+             {isOpen ? <Icons.ChevronDown size={14} /> : <Icons.ChevronRight size={14} />}
+           </span>
+        )}
+        {isFile && <span className="w-[14px] mr-0.5"></span>} {/* Spacer for alignment */}
+        
+        {isFile ? getFileIcon(node.name) : (isOpen ? <Icons.FolderOpen size={14} className="text-gray-400"/> : <Icons.Folder size={14} className="text-gray-400"/>)}
+        <span className={`truncate ${isOpenedInMemory && !isActive ? 'text-gray-300' : ''}`}>{node.name}</span>
+      </div>
+      {isOpen && node.children && (
+        <div>
+          {node.children.map(child => (
+            <FileTreeNode 
+              key={child.path} 
+              node={child} 
+              depth={depth + 1} 
+              activeFileId={activeFileId}
+              files={files}
+              onFileClick={onFileClick}
+              getFileIcon={getFileIcon}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+
+// --- Main App Component ---
+
 const App: React.FC = () => {
   // Auth State
   const [githubToken, setGithubToken] = useState<string>('');
@@ -26,7 +155,7 @@ const App: React.FC = () => {
   const [isResizing, setIsResizing] = useState(false);
 
   // View Mode State (Editor vs Preview)
-  const [viewMode, setViewMode] = useState<'editor' | 'preview'>('preview'); // Default to preview for initial welcome file
+  const [viewMode, setViewMode] = useState<'editor' | 'preview'>('preview'); 
   
   // Git Data State
   const [userRepos, setUserRepos] = useState<GitHubRepo[]>([]);
@@ -35,9 +164,15 @@ const App: React.FC = () => {
   const [isLoadingRepos, setIsLoadingRepos] = useState(false);
   const [isLoadingTree, setIsLoadingTree] = useState(false);
   const [connectedRepo, setConnectedRepo] = useState<string>('');
+  
+  // File Explorer View Mode
+  const [repoViewMode, setRepoViewMode] = useState<'tree' | 'list'>('tree');
 
   // Derived state for active file
   const activeFile = files.find(f => f.id === activeFileId) || (files.length > 0 ? files[0] : null);
+
+  // Memoized Tree Structure
+  const hierarchicalTree = React.useMemo(() => buildTree(repoTree), [repoTree]);
 
   // Load token from local storage on mount
   useEffect(() => {
@@ -61,7 +196,6 @@ const App: React.FC = () => {
     (mouseMoveEvent: MouseEvent) => {
       if (isResizing) {
         // Activity bar (48px/3rem) + Explorer (256px/16rem) = approx 304px offset from left
-        // We calculate width based on mouse position minus the left sidebar offset
         const newWidth = mouseMoveEvent.clientX - 304;
         if (newWidth >= 300 && newWidth <= 1200) {
           setAiSidebarWidth(newWidth);
@@ -84,13 +218,8 @@ const App: React.FC = () => {
   // Update view mode when switching files
   useEffect(() => {
     if (activeFile) {
-      // Logic to auto-switch view mode based on context
       if (activeFile.path.startsWith('docs/')) {
         setViewMode('preview');
-      } else if (activeFile.id === 'welcome' || activeFile.id === 'readme') {
-        // Keep current preference or default to preview for docs? 
-        // Let's default READMEs to preview if it's the first load, but generally respect user toggle.
-        // For now, let's leave it as is, user can toggle.
       } else {
         setViewMode('editor');
       }
@@ -111,7 +240,6 @@ const App: React.FC = () => {
       localStorage.setItem('devbuddybot_gh_token', tokenToUse);
       setIsLoginModalOpen(false);
       
-      // Fetch repos
       const repos = await getUserRepos(tokenToUse);
       setUserRepos(repos);
     } catch (err) {
@@ -151,7 +279,7 @@ const App: React.FC = () => {
       };
       setFiles([welcomeFile]);
       setActiveFileId('readme');
-      setViewMode('preview'); // Default README to preview
+      setViewMode('preview');
       
     } catch (error) {
       alert("Erro ao carregar a árvore do repositório.");
@@ -164,7 +292,6 @@ const App: React.FC = () => {
   const handleOpenPublicRepo = async (repoString: string) => {
     if (!githubToken) return;
     
-    // Clean input (remove https://github.com/ if present)
     const cleanRepo = repoString.trim().replace('https://github.com/', '').replace(/\/$/, '');
     const parts = cleanRepo.split('/');
     
@@ -173,7 +300,6 @@ const App: React.FC = () => {
 
     setIsLoadingTree(true);
     try {
-      // fetchRepoTree will auto-detect default branch if not provided
       const tree = await fetchRepoTree(owner, name, githubToken);
       setRepoTree(tree);
       setConnectedRepo(`${owner}/${name}`);
@@ -188,7 +314,7 @@ const App: React.FC = () => {
       setFiles([welcomeFile]);
       setActiveFileId('readme');
       setViewMode('preview');
-      setRepoFilter(''); // Clear filter
+      setRepoFilter(''); 
       
     } catch (error) {
       alert(`Erro ao carregar repositório "${cleanRepo}". Verifique se o nome está correto e se é público.`);
@@ -198,29 +324,32 @@ const App: React.FC = () => {
     }
   };
 
-  const handleFileClick = async (item: GitTreeItem) => {
-    const existing = files.find(f => f.path === item.path);
+  const handleFileClickRaw = async (path: string) => {
+    // Check if loaded
+    const existing = files.find(f => f.path === path);
     if (existing) {
       setActiveFileId(existing.id);
       return;
     }
 
+    // Find in tree to get SHA/details
+    const item = repoTree.find(t => t.path === path);
+    if (!item) return;
+
     try {
-      // Support nested paths for connectedRepo
       const [owner, repoName] = connectedRepo.split('/');
-      const content = await fetchFileContent(owner, repoName, item.path, githubToken);
+      const content = await fetchFileContent(owner, repoName, path, githubToken);
       
       const newFile: ProjectFile = {
         id: item.sha,
-        name: item.path.split('/').pop() || item.path,
-        path: item.path,
-        language: detectLanguage(item.path),
+        name: path.split('/').pop() || path,
+        path: path,
+        language: detectLanguage(path),
         content: content
       };
 
       setFiles(prev => [...prev, newFile]);
       setActiveFileId(newFile.id);
-      // Determine default view mode based on extension
       setViewMode(newFile.language === 'markdown' ? 'preview' : 'editor');
     } catch (err) {
       console.error("Failed to load file", err);
@@ -231,7 +360,7 @@ const App: React.FC = () => {
     const existing = files.find(f => f.id === `doc-${doc.id}`);
     if (existing) {
       setActiveFileId(existing.id);
-      setViewMode('preview'); // Always preview docs
+      setViewMode('preview');
       return;
     }
 
@@ -245,7 +374,7 @@ const App: React.FC = () => {
 
     setFiles(prev => [...prev, newDocFile]);
     setActiveFileId(newDocFile.id);
-    setViewMode('preview'); // Always preview docs
+    setViewMode('preview');
   };
 
   const handleCloseFile = (e: React.MouseEvent, fileId: string) => {
@@ -280,7 +409,6 @@ const App: React.FC = () => {
   const filteredRepos = userRepos.filter(r => r.full_name.toLowerCase().includes(repoFilter.toLowerCase()));
   const showPublicRepoOption = repoFilter.includes('/') && repoFilter.split('/').length >= 2;
 
-  // Dummy file for Chat when no file is open
   const dummyFile: ProjectFile = {
     id: 'none',
     name: 'Nenhum arquivo',
@@ -335,10 +463,7 @@ const App: React.FC = () => {
                <Icons.Key size={14} />
                Gerar Token no Navegador
              </a>
-
-             <div className="text-xs text-gray-500 text-center mt-2">
-               O token é salvo apenas no seu navegador.
-             </div>
+             <div className="text-xs text-gray-500 text-center mt-2">O token é salvo apenas no seu navegador.</div>
            </div>
         </div>
       </div>
@@ -369,35 +494,14 @@ const App: React.FC = () => {
         {/* Activity Bar */}
         <div className="w-12 bg-ide-activity flex flex-col items-center py-2 gap-2 border-r border-ide-border z-20 justify-between relative shrink-0">
           <div className="flex flex-col items-center gap-2 w-full">
-            <button 
-              onClick={() => setActiveSidebarView(SidebarView.EXPLORER)}
-              className={`p-3 rounded-md transition-all relative ${activeSidebarView === SidebarView.EXPLORER ? 'text-white border-l-2 border-ide-accent bg-[#2a2d2e]' : 'text-gray-500 hover:text-white'}`}
-              title="Explorador de Arquivos"
-            >
-              <Icons.GitBranch size={24} strokeWidth={1.5} />
-            </button>
-            <button 
-              onClick={() => setActiveSidebarView(SidebarView.SEARCH)}
-              className={`p-3 rounded-md transition-all ${activeSidebarView === SidebarView.SEARCH ? 'text-white border-l-2 border-ide-accent bg-[#2a2d2e]' : 'text-gray-500 hover:text-white'}`}
-              title="Busca"
-            >
-              <Icons.Search size={24} strokeWidth={1.5} />
-            </button>
-            <button 
-              onClick={() => setActiveSidebarView(SidebarView.HELP)}
-              className={`p-3 rounded-md transition-all ${activeSidebarView === SidebarView.HELP ? 'text-white border-l-2 border-ide-accent bg-[#2a2d2e]' : 'text-gray-500 hover:text-white'}`}
-              title="Ajuda e Documentação"
-            >
-              <Icons.HelpCircle size={24} strokeWidth={1.5} />
-            </button>
+            <button onClick={() => setActiveSidebarView(SidebarView.EXPLORER)} className={`p-3 rounded-md transition-all ${activeSidebarView === SidebarView.EXPLORER ? 'text-white border-l-2 border-ide-accent bg-[#2a2d2e]' : 'text-gray-500 hover:text-white'}`}><Icons.FolderOpen size={24} strokeWidth={1.5} /></button>
+            <button onClick={() => setActiveSidebarView(SidebarView.SEARCH)} className={`p-3 rounded-md transition-all ${activeSidebarView === SidebarView.SEARCH ? 'text-white border-l-2 border-ide-accent bg-[#2a2d2e]' : 'text-gray-500 hover:text-white'}`}><Icons.Search size={24} strokeWidth={1.5} /></button>
+            <button onClick={() => setActiveSidebarView(SidebarView.HELP)} className={`p-3 rounded-md transition-all ${activeSidebarView === SidebarView.HELP ? 'text-white border-l-2 border-ide-accent bg-[#2a2d2e]' : 'text-gray-500 hover:text-white'}`}><Icons.HelpCircle size={24} strokeWidth={1.5} /></button>
           </div>
-
           <div className="flex flex-col items-center gap-4 mb-2 group relative">
             {user && (
               <>
                  <img src={user.avatar_url} alt={user.login} className="w-8 h-8 rounded-full border border-gray-600 cursor-help" />
-                 
-                 {/* Profile Popover */}
                  <div className="absolute left-10 bottom-0 mb-0 ml-2 w-64 bg-[#252526] border border-[#454545] rounded-lg shadow-2xl p-4 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50">
                     <div className="flex items-center gap-3 mb-3 border-b border-gray-700 pb-3">
                       <img src={user.avatar_url} className="w-12 h-12 rounded-full" />
@@ -409,260 +513,179 @@ const App: React.FC = () => {
                     <div className="space-y-2 text-xs text-gray-300">
                        {user.bio && <div className="italic text-gray-500 mb-2">{user.bio}</div>}
                        {user.company && <div className="flex items-center gap-2"><Icons.Briefcase size={12}/> {user.company}</div>}
-                       {user.location && <div className="flex items-center gap-2"><Icons.MapPin size={12}/> {user.location}</div>}
                        <div className="flex items-center gap-2"><Icons.Users size={12}/> {user.followers} seguidores</div>
-                       <div className="flex items-center gap-2"><Icons.FolderOpen size={12}/> {user.public_repos} repos públicos</div>
-                    </div>
-                    <div className="mt-3 pt-2 border-t border-gray-700 flex flex-col gap-1">
-                       <div className="flex items-center gap-2 text-[10px] text-green-400">
-                          <Icons.ShieldCheck size={10} />
-                          Token Válido & Seguro
-                       </div>
-                       <div className="flex items-center gap-2 text-[10px] text-blue-400">
-                          <Icons.Link size={10} />
-                          Conexão GitHub API (v3)
-                       </div>
                     </div>
                  </div>
               </>
             )}
-            <button 
-              onClick={handleLogout}
-              className="text-gray-500 hover:text-red-400 transition-colors"
-              title="Sair"
-            >
-              <Icons.LogOut size={20} strokeWidth={1.5} />
-            </button>
+            <button onClick={handleLogout} className="text-gray-500 hover:text-red-400"><Icons.LogOut size={20} strokeWidth={1.5} /></button>
           </div>
         </div>
 
         {/* Sidebar */}
         <div className="w-64 bg-[#252526] flex flex-col border-r border-ide-border shrink-0">
           <div className="h-9 px-4 flex items-center justify-between text-[11px] font-bold text-gray-400 uppercase tracking-wider bg-[#252526] shrink-0">
-             {activeSidebarView === SidebarView.EXPLORER && 'Meus Repositórios'}
+             {activeSidebarView === SidebarView.EXPLORER && 'Explorer'}
              {activeSidebarView === SidebarView.SEARCH && 'Busca'}
              {activeSidebarView === SidebarView.HELP && 'Ajuda'}
           </div>
           
           {activeSidebarView === SidebarView.EXPLORER && (
             <div className="flex-1 overflow-y-auto flex flex-col">
-               {/* Repo Selection Mode */}
                {!connectedRepo ? (
                  <div className="flex flex-col h-full">
                    <div className="p-2 border-b border-ide-border">
                       <div className="relative">
                         <Icons.Search size={12} className="absolute left-2 top-2 text-gray-500"/>
-                        <input 
-                          className="w-full bg-[#3c3c3c] rounded text-xs text-white pl-7 pr-2 py-1 focus:outline-none border border-transparent focus:border-ide-accent placeholder-gray-500"
-                          placeholder="Filtrar ou user/repo..."
-                          value={repoFilter}
-                          onChange={(e) => setRepoFilter(e.target.value)}
-                        />
+                        <input className="w-full bg-[#3c3c3c] rounded text-xs text-white pl-7 pr-2 py-1 focus:outline-none border border-transparent focus:border-ide-accent placeholder-gray-500" placeholder="Filtrar ou user/repo..." value={repoFilter} onChange={(e) => setRepoFilter(e.target.value)} />
                       </div>
                    </div>
                    <div className="flex-1 overflow-y-auto">
-                      {/* Option to open public repo directly */}
                       {showPublicRepoOption && (
-                        <div 
-                          onClick={() => handleOpenPublicRepo(repoFilter)}
-                          className="px-3 py-3 cursor-pointer bg-[#2e3031] hover:bg-[#37373d] flex items-center gap-2 border-b border-ide-border group"
-                        >
-                           <div className="bg-ide-activity p-1.5 rounded text-green-400">
-                             <Icons.Globe size={14} />
-                           </div>
-                           <div className="flex flex-col min-w-0 flex-1">
-                              <span className="text-xs text-white font-medium truncate">Abrir Público</span>
-                              <span className="text-[10px] text-gray-400 truncate">{repoFilter}</span>
-                           </div>
+                        <div onClick={() => handleOpenPublicRepo(repoFilter)} className="px-3 py-3 cursor-pointer bg-[#2e3031] hover:bg-[#37373d] flex items-center gap-2 border-b border-ide-border group">
+                           <div className="bg-ide-activity p-1.5 rounded text-green-400"><Icons.Globe size={14} /></div>
+                           <div className="flex flex-col min-w-0 flex-1"><span className="text-xs text-white font-medium truncate">Abrir Público</span><span className="text-[10px] text-gray-400 truncate">{repoFilter}</span></div>
                            <Icons.ArrowRight size={12} className="text-gray-500 group-hover:text-white" />
                         </div>
                       )}
-
                       {filteredRepos.map(repo => (
-                        <div 
-                          key={repo.id}
-                          onClick={() => handleLoadRepo(repo)}
-                          className="px-3 py-2 cursor-pointer hover:bg-[#2a2d2e] flex items-center gap-2 group border-l-2 border-transparent hover:border-ide-accent transition-all"
-                        >
+                        <div key={repo.id} onClick={() => handleLoadRepo(repo)} className="px-3 py-2 cursor-pointer hover:bg-[#2a2d2e] flex items-center gap-2 group border-l-2 border-transparent hover:border-ide-accent transition-all">
                            {repo.private ? <Icons.Lock size={12} className="text-yellow-500"/> : <Icons.GitBranch size={12} className="text-blue-400"/>}
-                           <div className="flex flex-col min-w-0">
-                             <span className="text-xs text-gray-300 truncate font-medium group-hover:text-white">{repo.name}</span>
-                             <span className="text-[10px] text-gray-500 truncate">{repo.owner.login}</span>
-                           </div>
+                           <div className="flex flex-col min-w-0"><span className="text-xs text-gray-300 truncate font-medium group-hover:text-white">{repo.name}</span><span className="text-[10px] text-gray-500 truncate">{repo.owner.login}</span></div>
                            {isLoadingTree && connectedRepo === repo.full_name && <Icons.Loader size={12} className="ml-auto animate-spin" />}
                         </div>
                       ))}
-                      
-                      {filteredRepos.length === 0 && !showPublicRepoOption && (
-                        <div className="p-4 text-center">
-                          <p className="text-xs text-gray-500 mb-2">Nenhum repositório encontrado.</p>
-                          <p className="text-[10px] text-gray-600">Digite "usuario/repo" para abrir um repositório público.</p>
-                        </div>
-                      )}
                    </div>
                  </div>
                ) : (
-                 // Connected - Show File Tree
+                 // Connected
                  <div className="flex flex-col h-full">
-                    <div className="p-2 bg-[#2d2d2d] border-b border-ide-border flex items-center justify-between">
-                       <span className="text-xs font-bold truncate text-white flex items-center gap-2" title={connectedRepo}>
-                         <Icons.FolderOpen size={14} className="text-ide-accent min-w-[14px]"/> 
-                         <span className="truncate">{connectedRepo}</span>
-                       </span>
-                       <button onClick={() => { setConnectedRepo(''); setRepoTree([]); setFiles(INITIAL_FILES); }} className="text-xs text-red-400 hover:text-red-300 whitespace-nowrap ml-2">Fechar</button>
+                    {/* Repo Actions Header */}
+                    <div className="p-2 bg-[#2d2d2d] border-b border-ide-border flex flex-col gap-2">
+                       <div className="flex items-center justify-between">
+                         <span className="text-xs font-bold truncate text-white flex items-center gap-2" title={connectedRepo}>
+                           <Icons.FolderOpen size={14} className="text-ide-accent min-w-[14px]"/> 
+                           <span className="truncate">{connectedRepo.split('/')[1]}</span>
+                         </span>
+                         <button onClick={() => { setConnectedRepo(''); setRepoTree([]); setFiles(INITIAL_FILES); }} className="text-xs text-red-400 hover:text-red-300">Fechar</button>
+                       </div>
+                       <div className="flex items-center gap-1 bg-[#252526] p-0.5 rounded border border-gray-700">
+                          <button onClick={() => setRepoViewMode('tree')} className={`flex-1 p-0.5 rounded flex justify-center ${repoViewMode === 'tree' ? 'bg-[#37373d] text-white' : 'text-gray-500 hover:text-gray-300'}`} title="Árvore"><Icons.ListTree size={12}/></button>
+                          <button onClick={() => setRepoViewMode('list')} className={`flex-1 p-0.5 rounded flex justify-center ${repoViewMode === 'list' ? 'bg-[#37373d] text-white' : 'text-gray-500 hover:text-gray-300'}`} title="Lista Plana"><Icons.List size={12}/></button>
+                       </div>
                     </div>
                     
+                    {/* File List / Tree */}
                     <div className="flex-1 overflow-y-auto py-1">
-                      {repoTree.map(item => (
-                        <div 
-                            key={item.path}
-                            onClick={() => handleFileClick(item)}
-                            className={`flex items-center gap-2 px-4 py-1 cursor-pointer text-xs transition-colors whitespace-nowrap overflow-hidden ${
-                              activeFile && activeFile.path === item.path ? 'bg-[#37373d] text-white' : 'text-gray-400 hover:bg-[#2a2d2e] hover:text-gray-200'
-                            }`}
-                            style={{ paddingLeft: `${(item.path.split('/').length * 12) + 6}px` }}
-                        >
-                          {getFileIcon(item.path)}
-                          <span className="truncate">{item.path.split('/').pop()}</span>
+                      {repoViewMode === 'tree' ? (
+                        <div>
+                          {hierarchicalTree.map(node => (
+                             <FileTreeNode 
+                               key={node.path} 
+                               node={node} 
+                               depth={0} 
+                               activeFileId={activeFileId} 
+                               files={files}
+                               onFileClick={handleFileClickRaw}
+                               getFileIcon={getFileIcon}
+                             />
+                          ))}
                         </div>
-                      ))}
+                      ) : (
+                        repoTree.map(item => (
+                          <div 
+                              key={item.path}
+                              onClick={() => handleFileClickRaw(item.path)}
+                              className={`flex items-center gap-2 px-4 py-1 cursor-pointer text-xs transition-colors whitespace-nowrap overflow-hidden ${
+                                files.some(f => f.path === item.path && f.id === activeFileId) ? 'bg-[#37373d] text-white' : 'text-gray-400 hover:bg-[#2a2d2e] hover:text-gray-200'
+                              }`}
+                              style={{ paddingLeft: `${(item.path.split('/').length * 12) + 6}px` }}
+                          >
+                            {getFileIcon(item.path)}
+                            <span className="truncate">{item.path.split('/').pop()}</span>
+                          </div>
+                        ))
+                      )}
                     </div>
                  </div>
                )}
             </div>
           )}
-          
-          {activeSidebarView === SidebarView.SEARCH && (
-             <div className="p-4 text-center text-gray-500 text-xs mt-10">Busca global não disponível na versão web.</div>
-          )}
 
+          {activeSidebarView === SidebarView.SEARCH && <div className="p-4 text-center text-gray-500 text-xs mt-10">Busca global não disponível.</div>}
           {activeSidebarView === SidebarView.HELP && (
-            <div className="flex-1 overflow-y-auto">
-              <div className="p-2 space-y-1">
-                {APP_DOCS.map(doc => (
-                  <div 
-                    key={doc.id}
-                    onClick={() => handleOpenDoc(doc)}
-                    className="px-3 py-2 cursor-pointer hover:bg-[#2a2d2e] rounded text-gray-300 hover:text-white flex items-center gap-2 transition-colors"
-                  >
-                     <Icons.BookOpen size={14} className="text-ide-accent" />
-                     <span className="text-xs font-medium">{doc.title}</span>
-                  </div>
-                ))}
-              </div>
+            <div className="flex-1 overflow-y-auto p-2 space-y-1">
+              {APP_DOCS.map(doc => (
+                <div key={doc.id} onClick={() => handleOpenDoc(doc)} className="px-3 py-2 cursor-pointer hover:bg-[#2a2d2e] rounded text-gray-300 hover:text-white flex items-center gap-2 transition-colors">
+                   <Icons.BookOpen size={14} className="text-ide-accent" />
+                   <span className="text-xs font-medium">{doc.title}</span>
+                </div>
+              ))}
             </div>
           )}
         </div>
 
-        {/* AI Sidebar (Resizable) */}
-        <div 
-          style={{ width: isSidebarOpen ? aiSidebarWidth : 0 }}
-          className={`flex flex-col border-r border-ide-border bg-[#1e1e1e] shadow-xl z-20 shrink-0 relative group`}
-        >
-           <ChatInterface 
-              currentFile={activeFile || dummyFile} 
-              files={files} 
-              repoTree={repoTree} 
-              repoName={connectedRepo} 
-            />
-            {/* Resizer Handle */}
-            <div 
-              onMouseDown={startResizing}
-              className={`absolute right-0 top-0 w-1 h-full cursor-col-resize hover:bg-ide-accent hover:w-1.5 transition-all z-50 ${isResizing ? 'bg-ide-accent w-1.5' : 'opacity-0 group-hover:opacity-100'}`}
-            />
+        {/* AI Sidebar */}
+        <div style={{ width: isSidebarOpen ? aiSidebarWidth : 0 }} className={`flex flex-col border-r border-ide-border bg-[#1e1e1e] shadow-xl z-20 shrink-0 relative group`}>
+           {/* Custom AI Header implemented here inside ChatInterface but logic is cleaner now in App */}
+           <div className="h-9 border-b border-ide-border flex items-center justify-between px-3 bg-ide-activity shrink-0">
+               <div className="flex items-center gap-2 text-xs font-bold text-ide-accent tracking-wider">
+                  <Icons.Cpu size={14} />
+                  <span>AI ARCHITECT</span>
+               </div>
+               <div className="text-[10px] text-gray-500 truncate max-w-[150px]">{connectedRepo ? connectedRepo.split('/').pop() : 'Playground'}</div>
+           </div>
+           
+           <div className="flex-1 overflow-hidden relative">
+             <ChatInterface currentFile={activeFile || dummyFile} files={files} repoTree={repoTree} repoName={connectedRepo} />
+           </div>
+           
+           <div onMouseDown={startResizing} className={`absolute right-0 top-0 w-1 h-full cursor-col-resize hover:bg-ide-accent hover:w-1.5 transition-all z-50 ${isResizing ? 'bg-ide-accent w-1.5' : 'opacity-0 group-hover:opacity-100'}`}/>
         </div>
 
         {/* Editor Area */}
         <div className="flex-1 flex flex-col min-w-0 bg-[#1e1e1e]">
-          {/* Tabs */}
           <div className="h-9 bg-[#1e1e1e] flex items-center overflow-x-auto no-scrollbar border-b border-ide-border">
             {files.map(file => (
-              <div 
-                key={file.id}
-                onClick={() => setActiveFileId(file.id)}
-                className={`
-                  group px-3 py-2 text-xs flex items-center gap-2 border-r border-ide-border cursor-pointer min-w-[120px] max-w-[200px] select-none
-                  ${activeFileId === file.id ? 'bg-[#1e1e1e] text-white border-t-2 border-t-ide-accent' : 'bg-[#2d2d2d] text-gray-500 border-t-2 border-t-transparent hover:bg-[#1e1e1e]'}
-                `}
-              >
+              <div key={file.id} onClick={() => setActiveFileId(file.id)} className={`group px-3 py-2 text-xs flex items-center gap-2 border-r border-ide-border cursor-pointer min-w-[120px] max-w-[200px] select-none ${activeFileId === file.id ? 'bg-[#1e1e1e] text-white border-t-2 border-t-ide-accent' : 'bg-[#2d2d2d] text-gray-500 border-t-2 border-t-transparent hover:bg-[#1e1e1e]'}`}>
                 {getFileIcon(file.name)}
                 <span className="truncate">{file.name}</span>
-                <span 
-                  onClick={(e) => handleCloseFile(e, file.id)}
-                  className="ml-auto opacity-0 group-hover:opacity-100 hover:bg-gray-700 rounded p-1 text-gray-400 hover:text-white transition-all"
-                >
-                  <Icons.X size={12} />
-                </span>
+                <span onClick={(e) => handleCloseFile(e, file.id)} className="ml-auto opacity-0 group-hover:opacity-100 hover:bg-gray-700 rounded p-1 text-gray-400 hover:text-white transition-all"><Icons.X size={12} /></span>
               </div>
             ))}
           </div>
           
           {activeFile ? (
             <>
-              {/* Breadcrumbs and Controls */}
               <div className="h-8 flex items-center px-4 justify-between bg-[#1e1e1e] border-b border-ide-border/50">
-                 <div className="flex items-center text-xs text-gray-500">
-                    {connectedRepo || 'local'} <span className="mx-1">›</span> {activeFile.path || activeFile.name}
-                 </div>
-                 
-                 {/* Markdown Toggle */}
+                 <div className="flex items-center text-xs text-gray-500">{connectedRepo || 'local'} <span className="mx-1">›</span> {activeFile.path || activeFile.name}</div>
                  {activeFile.language === 'markdown' && (
                     <div className="flex bg-[#2d2d2d] rounded p-0.5 border border-[#3e3e42]">
-                       <button 
-                         onClick={() => setViewMode('editor')}
-                         className={`px-2 py-0.5 text-[10px] rounded transition-colors ${viewMode === 'editor' ? 'bg-ide-accent text-white' : 'text-gray-400 hover:text-gray-200'}`}
-                       >
-                         Code
-                       </button>
-                       <button 
-                         onClick={() => setViewMode('preview')}
-                         className={`px-2 py-0.5 text-[10px] rounded transition-colors ${viewMode === 'preview' ? 'bg-ide-accent text-white' : 'text-gray-400 hover:text-gray-200'}`}
-                       >
-                         Preview
-                       </button>
+                       <button onClick={() => setViewMode('editor')} className={`px-2 py-0.5 text-[10px] rounded transition-colors ${viewMode === 'editor' ? 'bg-ide-accent text-white' : 'text-gray-400 hover:text-gray-200'}`}>Code</button>
+                       <button onClick={() => setViewMode('preview')} className={`px-2 py-0.5 text-[10px] rounded transition-colors ${viewMode === 'preview' ? 'bg-ide-accent text-white' : 'text-gray-400 hover:text-gray-200'}`}>Preview</button>
                     </div>
                  )}
               </div>
-
-              {/* Editor or Preview Instance */}
               <div className="flex-1 relative overflow-hidden">
-                {activeFile.language === 'markdown' && viewMode === 'preview' ? (
-                   <MarkdownPreview content={activeFile.content} />
-                ) : (
-                   <CodeEditor 
-                    code={activeFile.content} 
-                    onChange={handleCodeChange} 
-                    language={activeFile.language} 
-                  />
-                )}
+                {activeFile.language === 'markdown' && viewMode === 'preview' ? <MarkdownPreview content={activeFile.content} /> : <CodeEditor code={activeFile.content} onChange={handleCodeChange} language={activeFile.language} />}
               </div>
             </>
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center bg-[#1e1e1e] text-gray-500 select-none">
                <Icons.Code size={48} className="mb-4 opacity-20" />
                <p className="text-sm font-medium">Nenhum arquivo aberto</p>
-               <p className="text-xs text-gray-600 mt-2 max-w-xs text-center">Selecione um arquivo no menu lateral para visualizar ou editar.</p>
             </div>
           )}
         </div>
       </div>
-
-      {/* Status Bar */}
       <div className="h-6 bg-ide-accent flex items-center px-3 justify-between text-[11px] text-white select-none z-30">
         <div className="flex items-center gap-3">
           <span className="flex items-center gap-1"><Icons.GitBranch size={10}/> {connectedRepo ? 'connected' : 'no-repo'}</span>
           <span className="flex items-center gap-1"><Icons.User size={10}/> {user ? user.login : 'Guest'}</span>
         </div>
         <div className="flex items-center gap-4">
-          <span className="cursor-pointer hover:bg-white/20 px-1 rounded" onClick={() => setIsSidebarOpen(!isSidebarOpen)}>
-            {isSidebarOpen ? 'Fechar Assistente' : 'Abrir Assistente'}
-          </span>
-          {activeFile && (
-             <>
-               <span className="uppercase">{activeFile.language}</span>
-               <span>UTF-8</span>
-             </>
-          )}
+          <span className="cursor-pointer hover:bg-white/20 px-1 rounded" onClick={() => setIsSidebarOpen(!isSidebarOpen)}>{isSidebarOpen ? 'Fechar Assistente' : 'Abrir Assistente'}</span>
+          {activeFile && <span className="uppercase">{activeFile.language}</span>}
         </div>
       </div>
     </div>

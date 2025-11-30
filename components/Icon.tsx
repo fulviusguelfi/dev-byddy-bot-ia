@@ -33,7 +33,12 @@ import {
   Link,
   HelpCircle,
   BookOpen,
-  Info
+  Info,
+  ChevronRight,
+  ChevronDown,
+  ListTree,
+  AlignJustify,
+  Folder
 } from 'lucide-react';
 
 export const Icons = {
@@ -52,6 +57,7 @@ export const Icons = {
   FileJson,
   FileType,
   FolderOpen,
+  Folder,
   Search,
   GitBranch,
   X,
@@ -70,5 +76,9 @@ export const Icons = {
   Link,
   HelpCircle,
   BookOpen,
-  Info
+  Info,
+  ChevronRight,
+  ChevronDown,
+  ListTree,
+  List: AlignJustify
 };
