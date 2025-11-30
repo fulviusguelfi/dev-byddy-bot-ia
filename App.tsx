@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import CodeEditor from './components/CodeEditor';
 import ChatInterface from './components/ChatInterface';
 import MarkdownPreview from './components/MarkdownPreview';
@@ -21,6 +21,10 @@ const App: React.FC = () => {
   const [activeSidebarView, setActiveSidebarView] = useState<SidebarView>(SidebarView.EXPLORER);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   
+  // Resize State
+  const [aiSidebarWidth, setAiSidebarWidth] = useState(450);
+  const [isResizing, setIsResizing] = useState(false);
+
   // View Mode State (Editor vs Preview)
   const [viewMode, setViewMode] = useState<'editor' | 'preview'>('preview'); // Default to preview for initial welcome file
   
@@ -43,6 +47,39 @@ const App: React.FC = () => {
       handleLogin(storedToken);
     }
   }, []);
+
+  // Resize Logic
+  const startResizing = useCallback(() => {
+    setIsResizing(true);
+  }, []);
+
+  const stopResizing = useCallback(() => {
+    setIsResizing(false);
+  }, []);
+
+  const resize = useCallback(
+    (mouseMoveEvent: MouseEvent) => {
+      if (isResizing) {
+        // Activity bar (48px/3rem) + Explorer (256px/16rem) = approx 304px offset from left
+        // We calculate width based on mouse position minus the left sidebar offset
+        const newWidth = mouseMoveEvent.clientX - 304;
+        if (newWidth >= 300 && newWidth <= 1200) {
+          setAiSidebarWidth(newWidth);
+        }
+      }
+    },
+    [isResizing]
+  );
+
+  useEffect(() => {
+    window.addEventListener("mousemove", resize);
+    window.addEventListener("mouseup", stopResizing);
+    return () => {
+      window.removeEventListener("mousemove", resize);
+      window.removeEventListener("mouseup", stopResizing);
+    };
+  }, [resize, stopResizing]);
+
 
   // Update view mode when switching files
   useEffect(() => {
@@ -327,10 +364,10 @@ const App: React.FC = () => {
       </header>
 
       {/* Main Layout */}
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 overflow-hidden" onMouseUp={stopResizing}>
         
         {/* Activity Bar */}
-        <div className="w-12 bg-ide-activity flex flex-col items-center py-2 gap-2 border-r border-ide-border z-20 justify-between relative">
+        <div className="w-12 bg-ide-activity flex flex-col items-center py-2 gap-2 border-r border-ide-border z-20 justify-between relative shrink-0">
           <div className="flex flex-col items-center gap-2 w-full">
             <button 
               onClick={() => setActiveSidebarView(SidebarView.EXPLORER)}
@@ -400,7 +437,7 @@ const App: React.FC = () => {
         </div>
 
         {/* Sidebar */}
-        <div className="w-64 bg-[#252526] flex flex-col border-r border-ide-border">
+        <div className="w-64 bg-[#252526] flex flex-col border-r border-ide-border shrink-0">
           <div className="h-9 px-4 flex items-center justify-between text-[11px] font-bold text-gray-400 uppercase tracking-wider bg-[#252526] shrink-0">
              {activeSidebarView === SidebarView.EXPLORER && 'Meus Repositórios'}
              {activeSidebarView === SidebarView.SEARCH && 'Busca'}
@@ -517,13 +554,21 @@ const App: React.FC = () => {
           )}
         </div>
 
-        {/* AI Sidebar */}
-        <div className={`${isSidebarOpen ? 'w-[450px]' : 'w-0'} transition-all duration-300 ease-in-out flex flex-col border-r border-ide-border bg-[#1e1e1e] shadow-xl z-20`}>
+        {/* AI Sidebar (Resizable) */}
+        <div 
+          style={{ width: isSidebarOpen ? aiSidebarWidth : 0 }}
+          className={`flex flex-col border-r border-ide-border bg-[#1e1e1e] shadow-xl z-20 shrink-0 relative group`}
+        >
            <ChatInterface 
               currentFile={activeFile || dummyFile} 
               files={files} 
               repoTree={repoTree} 
               repoName={connectedRepo} 
+            />
+            {/* Resizer Handle */}
+            <div 
+              onMouseDown={startResizing}
+              className={`absolute right-0 top-0 w-1 h-full cursor-col-resize hover:bg-ide-accent hover:w-1.5 transition-all z-50 ${isResizing ? 'bg-ide-accent w-1.5' : 'opacity-0 group-hover:opacity-100'}`}
             />
         </div>
 

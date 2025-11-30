@@ -1,5 +1,5 @@
 {
-  "name": "Copy of DevBuddyBot",
+  "name": "DevBuddyBot",
   "description": "Um agente de IA inteligente para desenvolvimento de software. Ele analisa seu código em tempo real, oferece refatoração, documentação e correção de bugs através de uma interface de chat integrada ao editor.",
   "requestFramePermissions": []
 }
