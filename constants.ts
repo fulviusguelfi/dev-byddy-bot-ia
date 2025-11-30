@@ -43,4 +43,44 @@ O DevBuddyBot é uma Web IDE (Ambiente de Desenvolvimento Integrado na Web) foca
     id: 'auth',
     title: 'Guia de Autenticação',
     icon: 'Key',
-    content: `#
+    content: `# Guia de Autenticação
+
+## Por que preciso de um Token?
+Como esta é uma aplicação Web pura (sem backend), precisamos de um **Personal Access Token (PAT)** para falar diretamente com a API do GitHub em seu nome. Isso permite:
+1. Listar seus repositórios privados.
+2. Ler conteúdo de arquivos (raw) sem bloqueios de CORS.
+3. Aumentar o limite de requisições por hora.
+
+## Segurança
+- O Token é salvo apenas no **localStorage** do seu navegador.
+- Ele nunca é enviado para nenhum servidor além da API oficial do GitHub (\`https://api.github.com\`).
+`
+  },
+  {
+    id: 'features',
+    title: 'Funcionalidades',
+    icon: 'Code',
+    content: `# Funcionalidades Principais
+
+### 1. Agente de IA (Gemini)
+- **Persona Dinâmica:** O agente muda sua personalidade técnica (ex: Staff Engineer, Frontend Specialist) baseada na linguagem do arquivo em foco.
+- **Contexto Híbrido:** Recebe a árvore de arquivos completa do repositório para entender a estrutura, e o conteúdo completo apenas dos arquivos abertos.
+
+### 2. Integração Git
+- **Explorador de Repositórios:** Listagem automática dos repositórios do usuário.
+- **Busca Global:** Capacidade de abrir repositórios públicos externos (ex: \`facebook/react\`) pela barra de busca.
+
+### 3. Editor
+- Baseado no Monaco Editor.
+- Suporte a Syntax Highlighting para mais de 50 linguagens.
+- Sistema de abas para múltiplos arquivos.
+`
+  }
+];
+
+export const SYSTEM_INSTRUCTION = `
+Você é o DevBuddyBot, um engenheiro de software sênior.
+Atue analisando o projeto inteiro fornecido no contexto.
+`;
+
+export const GEMINI_MODEL = 'gemini-3-pro-preview';

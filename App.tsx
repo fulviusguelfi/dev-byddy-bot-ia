@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import CodeEditor from './components/CodeEditor';
 import ChatInterface from './components/ChatInterface';
+import MarkdownPreview from './components/MarkdownPreview';
 import { INITIAL_FILES, APP_DOCS } from './constants';
 import { Icons } from './components/Icon';
 import { ProjectFile, SidebarView, GitTreeItem, GitHubUser, GitHubRepo, DocSection } from './types';
@@ -19,6 +20,9 @@ const App: React.FC = () => {
   const [activeFileId, setActiveFileId] = useState<string>(INITIAL_FILES[0].id);
   const [activeSidebarView, setActiveSidebarView] = useState<SidebarView>(SidebarView.EXPLORER);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  
+  // View Mode State (Editor vs Preview)
+  const [viewMode, setViewMode] = useState<'editor' | 'preview'>('preview'); // Default to preview for initial welcome file
   
   // Git Data State
   const [userRepos, setUserRepos] = useState<GitHubRepo[]>([]);
@@ -39,6 +43,22 @@ const App: React.FC = () => {
       handleLogin(storedToken);
     }
   }, []);
+
+  // Update view mode when switching files
+  useEffect(() => {
+    if (activeFile) {
+      // Logic to auto-switch view mode based on context
+      if (activeFile.path.startsWith('docs/')) {
+        setViewMode('preview');
+      } else if (activeFile.id === 'welcome' || activeFile.id === 'readme') {
+        // Keep current preference or default to preview for docs? 
+        // Let's default READMEs to preview if it's the first load, but generally respect user toggle.
+        // For now, let's leave it as is, user can toggle.
+      } else {
+        setViewMode('editor');
+      }
+    }
+  }, [activeFileId]);
 
   const handleLogin = async (tokenOverride?: string) => {
     const tokenToUse = tokenOverride || tokenInput;
@@ -94,6 +114,7 @@ const App: React.FC = () => {
       };
       setFiles([welcomeFile]);
       setActiveFileId('readme');
+      setViewMode('preview'); // Default README to preview
       
     } catch (error) {
       alert("Erro ao carregar a árvore do repositório.");
@@ -129,6 +150,7 @@ const App: React.FC = () => {
       };
       setFiles([welcomeFile]);
       setActiveFileId('readme');
+      setViewMode('preview');
       setRepoFilter(''); // Clear filter
       
     } catch (error) {
@@ -161,6 +183,8 @@ const App: React.FC = () => {
 
       setFiles(prev => [...prev, newFile]);
       setActiveFileId(newFile.id);
+      // Determine default view mode based on extension
+      setViewMode(newFile.language === 'markdown' ? 'preview' : 'editor');
     } catch (err) {
       console.error("Failed to load file", err);
     }
@@ -170,6 +194,7 @@ const App: React.FC = () => {
     const existing = files.find(f => f.id === `doc-${doc.id}`);
     if (existing) {
       setActiveFileId(existing.id);
+      setViewMode('preview'); // Always preview docs
       return;
     }
 
@@ -183,6 +208,7 @@ const App: React.FC = () => {
 
     setFiles(prev => [...prev, newDocFile]);
     setActiveFileId(newDocFile.id);
+    setViewMode('preview'); // Always preview docs
   };
 
   const handleCloseFile = (e: React.MouseEvent, fileId: string) => {
@@ -528,18 +554,42 @@ const App: React.FC = () => {
           
           {activeFile ? (
             <>
-              {/* Breadcrumbs */}
-              <div className="h-6 flex items-center px-4 text-xs text-gray-500 bg-[#1e1e1e] border-b border-ide-border/50">
-                 {connectedRepo || 'local'} <span className="mx-1">›</span> {activeFile.path || activeFile.name}
+              {/* Breadcrumbs and Controls */}
+              <div className="h-8 flex items-center px-4 justify-between bg-[#1e1e1e] border-b border-ide-border/50">
+                 <div className="flex items-center text-xs text-gray-500">
+                    {connectedRepo || 'local'} <span className="mx-1">›</span> {activeFile.path || activeFile.name}
+                 </div>
+                 
+                 {/* Markdown Toggle */}
+                 {activeFile.language === 'markdown' && (
+                    <div className="flex bg-[#2d2d2d] rounded p-0.5 border border-[#3e3e42]">
+                       <button 
+                         onClick={() => setViewMode('editor')}
+                         className={`px-2 py-0.5 text-[10px] rounded transition-colors ${viewMode === 'editor' ? 'bg-ide-accent text-white' : 'text-gray-400 hover:text-gray-200'}`}
+                       >
+                         Code
+                       </button>
+                       <button 
+                         onClick={() => setViewMode('preview')}
+                         className={`px-2 py-0.5 text-[10px] rounded transition-colors ${viewMode === 'preview' ? 'bg-ide-accent text-white' : 'text-gray-400 hover:text-gray-200'}`}
+                       >
+                         Preview
+                       </button>
+                    </div>
+                 )}
               </div>
 
-              {/* Monaco Instance */}
-              <div className="flex-1 relative">
-                <CodeEditor 
-                  code={activeFile.content} 
-                  onChange={handleCodeChange} 
-                  language={activeFile.language} 
-                />
+              {/* Editor or Preview Instance */}
+              <div className="flex-1 relative overflow-hidden">
+                {activeFile.language === 'markdown' && viewMode === 'preview' ? (
+                   <MarkdownPreview content={activeFile.content} />
+                ) : (
+                   <CodeEditor 
+                    code={activeFile.content} 
+                    onChange={handleCodeChange} 
+                    language={activeFile.language} 
+                  />
+                )}
               </div>
             </>
           ) : (
